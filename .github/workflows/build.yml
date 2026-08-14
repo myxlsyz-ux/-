@@ -13,6 +13,22 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
+    - name: Find and unzip project
+      run: |
+        # 查找上传的 ZIP 文件
+        ZIP_FILE=$(ls *.zip | head -1)
+        echo "Found ZIP: $ZIP_FILE"
+        # 解压 ZIP
+        unzip "$ZIP_FILE" -d extracted/
+        # 移动文件到根目录（处理多层嵌套）
+        if [ -d "extracted/$(ls extracted | head -1)/app" ]; then
+          mv extracted/$(ls extracted | head -1)/* .
+        else
+          mv extracted/* .
+        fi
+        # 显示目录结构，方便调试
+        ls -la
+        
     - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
