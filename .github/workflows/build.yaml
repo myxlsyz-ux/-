@@ -1,0 +1,111 @@
+name: Android ZIP 云编译 (自动解压并生成 APK)
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: 'Android 源码 ZIP 的直接下载链接（必须公开可访问）'
+        required: true
+        type: string
+      build_type:
+        description: '编译类型'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+      java_version:
+        description: 'JDK 版本'
+        required: true
+        default: '17'
+        type: choice
+        options:
+          - '11'
+          - '17'
+          - '21'
+
+jobs:
+  build:
+    name: 解压并编译 APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 检出仓库（用于存放工作流）
+        uses: actions/checkout@v4
+
+      - name: 下载并解压源码 ZIP
+        run: |
+          mkdir -p source
+          echo "正在下载 ZIP..."
+          curl -L -o source.zip "${{ inputs.zip_url }}"
+          echo "正在解压..."
+          unzip -q source.zip -d source
+          # 如果 ZIP 解压后多了一层目录，自动进入最内层有 gradlew 的目录
+          if [ -f source/gradlew ]; then
+            echo "SOURCE_DIR=source" >> $GITHUB_ENV
+          else
+            # 查找包含 gradlew 的目录
+            GRADLEW_PATH=$(find source -name "gradlew" -type f | head -n 1)
+            if [ -z "$GRADLEW_PATH" ]; then
+              echo "错误：解压后未找到 gradlew，请确认 ZIP 是完整的 Android 项目"
+              ls -la source/
+              exit 1
+            fi
+            SOURCE_DIR=$(dirname "$GRADLEW_PATH")
+            echo "SOURCE_DIR=$SOURCE_DIR" >> $GITHUB_ENV
+            echo "找到项目目录: $SOURCE_DIR"
+          fi
+
+      - name: 设置 JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ inputs.java_version }}
+
+      - name: 设置 Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'tools platform-tools platforms;android-34 build-tools;34.0.0'
+
+      - name: 缓存 Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            \~/.gradle/caches
+            \~/.gradle/wrapper
+          key: \( {{ runner.os }}-gradle- \){{ hashFiles('**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: 赋予 gradlew 执行权限并编译
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: |
+          chmod +x gradlew
+          if [ "${{ inputs.build_type }}" = "debug" ]; then
+            ./gradlew assembleDebug --stacktrace --no-daemon
+          else
+            ./gradlew assembleRelease --stacktrace --no-daemon
+          fi
+
+      - name: 查找生成的 APK
+        id: find-apk
+        run: |
+          APK_PATH=$(find ${{ env.SOURCE_DIR }} -name "*.apk" -type f | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "错误：未找到任何 APK 文件"
+            find ${{ env.SOURCE_DIR }} -name "*.apk" || true
+            exit 1
+          fi
+          echo "找到 APK: $APK_PATH"
+          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          # 复制到根目录方便上传
+          cp "$APK_PATH" ./app-built.apk
+
+      - name: 上传 APK 作为 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk-\( {{ inputs.build_type }}- \){{ github.run_number }}
+          path: app-built.apk
+          retention-days: 7
